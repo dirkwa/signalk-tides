@@ -306,6 +306,8 @@ export = function (app: SignalKApp): Plugin {
       stationName: string;
       lowTime: string;
       highTime: string;
+      heightNow: number;
+      lastUpdate: number;
     } | null = null;
 
     async function updateTides(now = new Date()) {
@@ -313,21 +315,33 @@ export = function (app: SignalKApp): Plugin {
       // Get the next two upcoming extremes
       const nextTides = lastForecast.extremes.filter(({ time }) => new Date(time) >= now).slice(0, 2)
 
+      const heightNow = approximateTideHeightAt(lastForecast.extremes, now);
+      if (heightNow === null) return; // Cannot calculate current height
+
       // Check if we need to send an update
       const currentState = {
         stationName: lastForecast.station.name,
         lowTime: nextTides.find(t => t.type === 'Low')?.time || '',
         highTime: nextTides.find(t => t.type === 'High')?.time || '',
+        heightNow,
+        lastUpdate: now.getTime(),
       };
 
-      // Only send delta if something changed (station, or next tide times)
-      const shouldUpdate = !lastSentTideState ||
-        lastSentTideState.stationName !== currentState.stationName ||
+      // Determine if we should send an update
+      const stationChanged = !lastSentTideState || lastSentTideState.stationName !== currentState.stationName;
+      const tidesChanged = !lastSentTideState ||
         lastSentTideState.lowTime !== currentState.lowTime ||
         lastSentTideState.highTime !== currentState.highTime;
 
+      // Send update if height changed significantly (>5cm) OR it's been >10 minutes
+      const heightChanged = !lastSentTideState || Math.abs(lastSentTideState.heightNow - heightNow) > 0.05;
+      const timeSinceLastUpdate = lastSentTideState ? (now.getTime() - lastSentTideState.lastUpdate) : Infinity;
+      const shouldUpdateHeight = heightChanged || timeSinceLastUpdate > 10 * 60 * 1000; // 10 minutes
+
+      const shouldUpdate = stationChanged || tidesChanged || shouldUpdateHeight;
+
       if (!shouldUpdate) {
-        return; // Silently skip - no need to log
+        return; // Silently skip - no meaningful change
       }
 
       const delta = {
@@ -342,7 +356,7 @@ export = function (app: SignalKApp): Plugin {
               },
               {
                 path: "environment.tide.heightNow",
-                value: approximateTideHeightAt(lastForecast.extremes, now)
+                value: heightNow
               },
               ...nextTides.flatMap(
                 ({ type, time, value }) => {
@@ -377,21 +391,27 @@ export = function (app: SignalKApp): Plugin {
       const now = new Date();
       const nextTides = lastForecast.extremes.filter(({ time }) => new Date(time) > now);
 
-      if (nextTides.length === 0) {
-        app.debug("No upcoming tides, skipping timer schedule");
-        return;
+      // Calculate two possible wake-up times:
+      // 1. Next tide extreme (+ 1 minute buffer)
+      // 2. 10 minutes from now (for heightNow updates)
+      const periodicUpdate = 10 * 60 * 1000; // 10 minutes
+
+      let scheduleDelay = periodicUpdate; // Default to periodic updates
+
+      if (nextTides.length > 0) {
+        const nextTideTime = new Date(nextTides[0].time);
+        const timeUntilNextTide = nextTideTime.getTime() - now.getTime() + 60000; // +1 minute buffer
+
+        // Wake up at whichever comes first: next tide or periodic update
+        scheduleDelay = Math.min(timeUntilNextTide, periodicUpdate);
       }
 
-      // Schedule update 1 minute after the next tide extreme occurs
-      const nextTideTime = new Date(nextTides[0].time);
-      const timeUntilNextTide = nextTideTime.getTime() - now.getTime() + 60000; // +1 minute buffer
-
       // Ensure we don't schedule too far in the future (max 24 hours)
-      const scheduleDelay = Math.min(timeUntilNextTide, 24 * 60 * 60 * 1000);
+      scheduleDelay = Math.min(scheduleDelay, 24 * 60 * 60 * 1000);
 
       if (scheduleDelay > 0) {
-        const nextTideDate = new Date(now.getTime() + scheduleDelay);
-        app.debug(`Next tide update scheduled for ${nextTideDate.toISOString()} (in ${Math.round(scheduleDelay / 60000)} minutes)`);
+        const nextUpdateDate = new Date(now.getTime() + scheduleDelay);
+        app.debug(`Next tide check scheduled for ${nextUpdateDate.toISOString()} (in ${Math.round(scheduleDelay / 60000)} minutes)`);
         nextTideTimer = setTimeout(() => {
           updateTides();
         }, scheduleDelay);
