@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24 # npm >= 11.5.1 for trusted publishing
+          node-version-file: .github/mise.node24.toml # npm >= 11.5.1 for trusted publishing
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies

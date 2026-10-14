@@ -1,0 +1,3 @@
+# Lockfile checks and npm trusted publishing use Node 24.
+[tools]
+node = "24"
